@@ -1,5 +1,6 @@
 from customVGG import CustomVGG
-from BagOK.bagOfKernel import init, __readInfoJSON, __writeInfoJSON, __summary
+from BagOK.networkSummary import __summary
+from BagOK.bagOfKernel import init, __readInfoJSON, __writeInfoJSON
 from BagOK.summary import summary
 
 if __name__ == '__main__':
