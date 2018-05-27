@@ -14,6 +14,7 @@ import os
     其他函式是提供開發者更新預訓練網路資訊時才需要呼叫
 """
 
+__INFO_NAME = './bag.json'
 layer_count = 0
 
 def init(net, input_size, summary, net_type = None):
@@ -25,6 +26,10 @@ def init(net, input_size, summary, net_type = None):
                 summary     - 透過pytorch-summary回傳的統計資訊
                 type        - 為想要初始化的網路依據名子
     """
+    # Check if the info file is exist
+    if not os.path.exists(__INFO_NAME):
+        raise Exception('You should download the info JSON file!')
+
     # -----------------------------------------
     #
     # target_summary = None
@@ -63,10 +68,8 @@ def init(net, input_size, summary, net_type = None):
         __appropriateLoad(net, input_size, summary, name_2_diff, info)
 
 def __getLayerInfo(info, net_name, index):
-    summary = info['model_list'][net_name]['net']
-    for idx, layer in enumerate(summary):
-        if idx == index:
-            return layer, summary[layer]
+    layer_name = info['model_list'][net_name]['layer_list'][index]
+    return layer_name, info['model_list'][net_name]['net'][layer_name]
 
 def __appropriateLoad(net, net_input_size, summary, name_2_diff, info):
     """
@@ -208,7 +211,7 @@ def diff(source, target):
                 score -= 1
     return score 
 
-def __readInfoJSON(name = './bag.json'):
+def __readInfoJSON(file_name = './bag.json'):
     """
         << 使用者切勿直接使用此函式 >>
 
@@ -223,10 +226,13 @@ def __readInfoJSON(name = './bag.json'):
         }
         使用前需要先透過info[name_list]獲取所有紀錄過的model，在個別進行操作
     """
-    if not os.path.exists(name):
+    global __INFO_NAME
+    if __INFO_NAME != file_name:
+        __INFO_NAME = file_name
+    if not os.path.exists(__INFO_NAME):
         info = dict()
     else:
-        info = json.load(open(name, 'r'))
+        info = json.load(open(__INFO_NAME, 'r'))
     return info
 
 def __writeInfoJSON(summary, net_name, file_name = './bag.json'):
@@ -238,7 +244,10 @@ def __writeInfoJSON(summary, net_name, file_name = './bag.json'):
         Arg:    summary     - 網路的summary資訊
                 net_name    - 要指定寫入info檔中網路的名子
     """
-    info = __readInfoJSON(file_name)
+    global __INFO_NAME
+    if __INFO_NAME != file_name:
+        __INFO_NAME = file_name
+    info = __readInfoJSON(__INFO_NAME)
     if 'name_list' not in info:
         info['name_list'] = [net_name]
     else:
@@ -246,4 +255,4 @@ def __writeInfoJSON(summary, net_name, file_name = './bag.json'):
     if 'model_list' not in info:
         info['model_list'] = {}
     info['model_list'][net_name] = summary
-    json.dump(info, open(file_name, 'w'))
+    json.dump(info, open(__INFO_NAME, 'w'))
