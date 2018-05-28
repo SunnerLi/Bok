@@ -103,7 +103,9 @@ def __showSum(input_size, summary):
             if summary[layer]['trainable'] == True:
                 trainable_params += summary[layer]['nb_params']
         if 'weight_param' in summary[layer]:
-            line_new += '{:>25} {:>25}'.format(str(summary[layer]['weight_param']), str(summary[layer]['bias_param']))
+            line_new += '{:>25} '.format(str(summary[layer]['weight_param']))
+        if 'bias_param' in summary[layer]:
+            line_new += '{:>25} '.format(str(summary[layer]['bias_param']))
 
         print(line_new)
     print('=======================================================================================================================')
