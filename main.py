@@ -23,4 +23,4 @@ if __name__ == '__main__':
     # init(net, [3, 224, 224], net_sum)
     net = vgg16_bn(pretrained = True).cuda()
     net_sum = __summary(net, [3, 244, 244], verbose = True)
-    # init(net, [3, 224, 224], net_sum)
+    init(net, [3, 224, 224], net_sum)

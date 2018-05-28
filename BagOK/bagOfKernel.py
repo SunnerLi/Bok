@@ -2,6 +2,7 @@ from .networkSummary import __summary
 from collections import OrderedDict
 from torch.autograd import Variable
 from .pretrain import load
+from .utils import INFO
 # import networkSummary.__summary
 import torch.nn as nn
 import torch
@@ -16,8 +17,9 @@ import os
 
 __INFO_NAME = './bag.json'
 layer_count = 0
+VERBOSE = False
 
-def init(net, input_size, summary, net_type = None):
+def init(net, net_input_size, summary, net_type = None, verbose = False):
     """
         對於給定的網路進行初始化
         
@@ -52,11 +54,21 @@ def init(net, input_size, summary, net_type = None):
     if net_type is not None:
         target_summary = info['model_list'][net_type]
         if diff(summary, target_summary) == 0:
-            # __directLoad(net, net_type)
             print('Direct assign!')
             net.load_state_dict(load(net_type).state_dict())
             return
     else:
+        """
+            尋找最有可能的組合來填充
+
+            1. 針對每一個候選的網路，都去計算相似度
+            2. 針對每一層，根據相似度尋找可能的來源網路
+            3. 掛hook去把這些可能網路的參數抓出來
+            4. 掛hook去把可能的參數初始到目標網路上
+        """
+        # -------------------------------------------
+        # (1) 針對每一個候選網路計算相似度
+        # -------------------------------------------
         name_2_diff = OrderedDict()
         small_diff = 100
         for model_name in info['name_list']:
@@ -65,132 +77,126 @@ def init(net, input_size, summary, net_type = None):
             name_2_diff[model_name] = diff_value
             if diff_value < small_diff:
                 diff_value = small_diff
-        __appropriateLoad(net, input_size, summary, name_2_diff, info)
+
+        # -------------------------------------------
+        # (1) 依分數大到小排出名子序列
+        # -------------------------------------------
+        filter_dict = OrderedDict(name_2_diff)
+        model_sort_list = []
+        for i in range(len(info['model_list'])):
+            big_score = None
+            big_model = None
+            for model_name in filter_dict:
+                if big_score is None:
+                    big_score = name_2_diff[model_name]
+                    big_model = model_name
+                else:
+                    if name_2_diff[model_name] < big_score:
+                        big_score = name_2_diff[model_name]
+                        big_model = model_name
+            model_sort_list.append(big_model)
+            filter_dict.pop(big_model)
+        model_sort_list = list(reversed(model_sort_list))
+
+        # -------------------------------------------
+        # (2) 一層層搜尋最有可能的pre-trained model
+        # -------------------------------------------
+        ancenter = []
+        for i, layer_name in enumerate(summary['layer_list']):
+            layer_type = layer_name.split('-')[0]
+            source = 'random'
+            for net_name in model_sort_list:
+                if i < len(info['model_list'][net_name]['layer_list']):
+                    layer_name, layer_summary = __getLayerInfo(info, net_name, i)
+                    if layer_name.split('-')[0] == layer_type:
+                        if 'weight_param' in layer_summary:
+                            if layer_summary['weight_param'] == summary['net'][layer_name]['weight_param']:
+                                source = net_name
+                                break
+            ancenter.append(source)
+        
+        # -------------------------------------------
+        # (Opt) 印出每一層的資訊，以及預訓練的模型來源
+        # -------------------------------------------
+        INFO('------------------------------------------------------------')
+        category_line = '{:>25} {:>25}'.format('Layer Type', 'From')
+        INFO(category_line)
+        INFO('============================================================')
+        for layer, anc in zip(summary['layer_list'], ancenter):
+            layer_info = '{:>25} {:>25}'.format(layer, anc)
+            INFO(layer_info)
+        INFO('------------------------------------------------------------')
+
+        # -------------------------------------------
+        # (3) 根據ancenter list擷取每一層的weight        
+        # -------------------------------------------
+        param_list = [None] * len(ancenter)
+        for net_name in set(ancenter):
+            if net_name != 'random':
+                def register_scratch_hook(module):
+                    global layer_count
+                    layer_count = 0
+                    def scratch_hook(module, input, output):
+                        global layer_count
+                        if layer_count < len(ancenter):
+                            if ancenter[layer_count] == net_name:
+                                param_list[layer_count] = module.state_dict()
+                        layer_count += 1
+                    if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
+                        hook_list.append(module.register_forward_hook(scratch_hook))
+                pretrained_model = load(net_name)
+                hook_list = []
+                pretrained_model.apply(register_scratch_hook)
+
+                # Form the input list
+                input_size = info['model_list'][net_name]['input_size']
+                if torch.cuda.is_available():
+                    dtype = torch.cuda.FloatTensor
+                    pretrained_model = pretrained_model.cuda()
+                else:
+                    dtype = torch.FloatTensor
+                    pretrained_model = pretrained_model.cpu()
+                x = Variable(torch.rand(1,*input_size)).type(dtype)
+                pretrained_model(x)
+
+                # remove these hooks
+                for h in hook_list:
+                    h.remove()
+
+        # -------------------------------------------
+        # (4) 用hook把weight初始化上去
+        # -------------------------------------------
+        def register_assign_hook(module):
+            global layer_count
+            layer_count = 0
+            def assign_hook(module, input, output):
+                global layer_count
+                if layer_count < len(ancenter):
+                    if param_list[layer_count] is not None:
+                        module.load_state_dict(param_list[layer_count])
+                layer_count += 1
+            if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
+                hook_list.append(module.register_forward_hook(assign_hook))
+        hook_list = []
+        net.apply(register_assign_hook)
+
+        # Form the input list
+        if torch.cuda.is_available():
+            dtype = torch.cuda.FloatTensor
+            net = net.cuda()
+        else:
+            dtype = torch.FloatTensor
+            net = net.cpu()
+        x = Variable(torch.rand(1,*net_input_size)).type(dtype)
+        net(x)
+
+        # remove these hooks
+        for h in hook_list:
+            h.remove()
 
 def __getLayerInfo(info, net_name, index):
     layer_name = info['model_list'][net_name]['layer_list'][index]
-    return layer_name, info['model_list'][net_name]['net'][layer_name]
-
-def __appropriateLoad(net, net_input_size, summary, name_2_diff, info):
-    """
-        層層尋找誤差最小的來填充
-    """
-    # 依分數大到小排出名子序列
-    filter_dict = OrderedDict(name_2_diff)
-    model_sort_list = []
-    for i in range(len(info['model_list'])):
-        big_score = None
-        big_model = None
-        for model_name in filter_dict:
-            if big_score is None:
-                big_score = name_2_diff[model_name]
-                big_model = model_name
-            else:
-                if name_2_diff[model_name] < big_score:
-                    big_score = name_2_diff[model_name]
-                    big_model = model_name
-        model_sort_list.append(big_model)
-        filter_dict.pop(big_model)
-
-    # 一層層搜尋最有可能的pre-trained model
-    ancenter = []
-    for i, layer_name in enumerate(summary['layer_list']):
-        layer_type = layer_name.split('-')[0]
-        source = 'random'
-        for net_name in model_sort_list:
-            layer_name, layer_summary = __getLayerInfo(info, net_name, i)
-            if layer_name.split('-')[0] == layer_type:
-                if 'weight_param' in layer_summary:
-                    if layer_summary['weight_param'] == summary['net'][layer_name]['weight_param']:
-                        source = net_name
-                        break
-        ancenter.append(source)
-
-    # -----------------------------------------
-    #       <<  根據祖先list填充權重值 >>
-    # 
-    # param_list = []
-    # for net_name in set(ancenter):
-    #     def register_scratch_hook(module):
-    #         layer_counter = 0
-    #         def scratch_hook(module, input, output):
-    #             if ancenter[layer_counter] == net_name:
-    #                 param.add(module.state_dict(), layer_counter)
-    #             layer_counter += 1
-
-    #     pretrained_model = 把model載入
-    #     掛上scratch_hook
-    #     pretrained_model.forward()
-
-    # def register_assign_hook(module):
-    #     layer_counter = 0
-    #     def assign_hook(module, input, output):
-    #         module.load_state_dict(param_list[layer_counter])
-    #         layer_counter += 1
-    # 掛上assign_hook
-    # net.forward()
-    #
-    # -----------------------------------------
-    param_list = [None] * len(ancenter)
-    for net_name in set(ancenter):
-        if net_name != 'random':
-            def register_scratch_hook(module):
-                global layer_count
-                layer_count = 0
-                def scratch_hook(module, input, output):
-                    global layer_count
-                    if layer_count < len(ancenter):
-                        if ancenter[layer_count] == net_name:
-                            param_list[layer_count] = module.state_dict()
-                    layer_count += 1
-                if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
-                    hook_list.append(module.register_forward_hook(scratch_hook))
-            pretrained_model = load(net_name)
-            hook_list = []
-            pretrained_model.apply(register_scratch_hook)
-
-            # Form the input list
-            input_size = info['model_list'][net_name]['input_size']
-            if torch.cuda.is_available():
-                dtype = torch.cuda.FloatTensor
-                pretrained_model = pretrained_model.cuda()
-            else:
-                dtype = torch.FloatTensor
-                pretrained_model = pretrained_model.cpu()
-            x = Variable(torch.rand(1,*input_size)).type(dtype)
-            pretrained_model(x)
-
-            # remove these hooks
-            for h in hook_list:
-                h.remove()
-    
-    def register_assign_hook(module):
-        global layer_count
-        layer_count = 0
-        def assign_hook(module, input, output):
-            global layer_count
-            if layer_count < len(ancenter):
-                if param_list[layer_count] is not None:
-                    module.load_state_dict(param_list[layer_count])
-            layer_count += 1
-        if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
-            hook_list.append(module.register_forward_hook(assign_hook))
-    
-    hook_list = []
-    net.apply(register_assign_hook)
-
-    if torch.cuda.is_available():
-        dtype = torch.cuda.FloatTensor
-        net = net.cuda()
-    else:
-        dtype = torch.FloatTensor
-        net = net.cpu()
-    x = Variable(torch.rand(1,*net_input_size)).type(dtype)
-    net(x)
-
-    # remove these hooks
-    for h in hook_list:
-        h.remove()
+    return layer_name, info['model_list'][net_name]['net'][layer_name]    
 
 def diff(source, target):
     """
@@ -200,7 +206,8 @@ def diff(source, target):
     score = 0
     source_order = source['layer_list']
     target_order = target['layer_list']
-    for i in range(len(source_order)):
+    layer_num = min(len(source_order), len(target_order))
+    for i in range(layer_num):
         source_layer_name = source_order[i]
         target_layer_name = target_order[i]
         if source_layer_name != target_layer_name:
