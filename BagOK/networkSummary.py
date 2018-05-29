@@ -1,5 +1,6 @@
 from torch.autograd import Variable
 from collections import OrderedDict
+from .utils import INFO
 import torch.nn as nn
 import torch
 
@@ -86,12 +87,12 @@ def __summary(model, input_size, verbose = False):
     return summary
 
 def __showSum(input_size, summary):
-    print('-----------------------------------------------------------------------------------------------------------------------')
-    line_new = '{:>20}  {:>25} {:>15} {:>25} {:>25}'.format('Layer (type)', 'Output Shape', 'Param #', 'Weight Param', 'Bias Param')
-    print(line_new)
-    print('=======================================================================================================================')
+    INFO('-----------------------------------------------------------------------------------------------------------------------')
+    line_new = '{:>20}  {:>25} {:>15} {:>25} {:>15}'.format('Layer (type)', 'Output Shape', 'Param #', 'Weight Param', 'Bias Param')
+    INFO(line_new)
+    INFO('=======================================================================================================================')
     line_new = '{:>20}  {:>25} {:>15}'.format('Input Tensor', str([-1,]+input_size), 'None')
-    print(line_new)
+    INFO(line_new)
     total_params = 0
     trainable_params = 0
     for layer in summary:
@@ -105,11 +106,11 @@ def __showSum(input_size, summary):
         if 'weight_param' in summary[layer]:
             line_new += '{:>25} '.format(str(summary[layer]['weight_param']))
         if 'bias_param' in summary[layer]:
-            line_new += '{:>25} '.format(str(summary[layer]['bias_param']))
+            line_new += '{:>15} '.format(str(summary[layer]['bias_param']))
 
-        print(line_new)
-    print('=======================================================================================================================')
-    print('Total params: ' + str(total_params))
-    print('Trainable params: ' + str(trainable_params))
-    print('Non-trainable params: ' + str(total_params - trainable_params))
-    print('-----------------------------------------------------------------------------------------------------------------------')
+        INFO(line_new)
+    INFO('=======================================================================================================================')
+    INFO('Total params: ' + str(total_params))
+    INFO('Trainable params: ' + str(trainable_params))
+    INFO('Non-trainable params: ' + str(total_params - trainable_params))
+    INFO('-----------------------------------------------------------------------------------------------------------------------')

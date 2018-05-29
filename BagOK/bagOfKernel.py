@@ -1,9 +1,8 @@
 from .utils import INFO, load_state_dict
 from .networkSummary import __summary
-from collections import OrderedDict
 from torch.autograd import Variable
+from collections import OrderedDict
 from .pretrain import load
-# import networkSummary.__summary
 import torch.nn as nn
 import torch
 import json
@@ -19,7 +18,7 @@ __INFO_NAME = './bag.json'
 layer_count = 0
 VERBOSE = False
 
-def init(net, net_input_size, summary, net_type = None, verbose = False):
+def init(net, net_input_size, net_type = None, verbose = False):
     """
         對於給定的網路進行初始化
         初始化的方式有兩種，一種是hard initialization，另一種是soft initialization
@@ -44,6 +43,10 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
                 summary     - 透過pytorch-summary回傳的統計資訊
                 type        - 為想要初始化的網路依據名子
     """
+    # Obtain the summary object
+    net = net.cuda() if torch.cuda.is_available() else net
+    summary = __summary(net, net_input_size, verbose = verbose)
+
     # Check if the info file is exist
     if not os.path.exists(__INFO_NAME):
         raise Exception('You should download the info JSON file!')
@@ -69,8 +72,7 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
     info = __readInfoJSON()
     if net_type is not None:
         target_summary = info['model_list'][net_type]
-        if diff(summary, target_summary) == 0:
-            print('Direct assign!')
+        if __summary_diff(summary, target_summary, summary['layer_list'], target_summary['layer_list']) == 0:
             # net.load_state_dict(load(net_type).state_dict())
             net = load_state_dict(load(net_type), net)                          # 可能會沒有賦值到？？？
             return
@@ -97,7 +99,7 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
             for layer_name in info['model_list'][model_name]['net']:
                 if 'weight_param' not in info['model_list'][model_name]['net'][layer_name]:
                     result_weight_layer_list.remove(layer_name)
-                    result_weight_index_list.remove(int(layer_name.split('-')[-1]))
+                    result_weight_index_list.remove(int(layer_name.split('-')[-1]) - 1)
             info['model_list'][model_name]['weight_layer_list'] = result_weight_layer_list
             info['model_list'][model_name]['weight_index_list'] = result_weight_index_list
         result_weight_layer_list = list(summary['layer_list'])
@@ -105,7 +107,7 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
         for layer_name in summary['net']:
             if 'weight_param' not in summary['net'][layer_name]:
                 result_weight_layer_list.remove(layer_name)
-                result_weight_index_list.remove(layer_name.split('-')[-1])
+                result_weight_index_list.remove(int(layer_name.split('-')[-1]) - 1)
         summary['weight_layer_list'] = result_weight_layer_list
         summary['weight_index_list'] = result_weight_index_list
 
@@ -133,53 +135,62 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
             
         # -------------------------------------------
         # (3) 依分數大到小排出名子序列
+        #     包括soft跟hard的情況 
         # -------------------------------------------
         model_hard_sort_list = getSortList(info, name_2_hard_diff)
-        model_soft_sort_list = getSortList(info, name_2_hard_diff)
+        model_soft_sort_list = getSortList(info, name_2_soft_diff)
 
         # -------------------------------------------
         # (4) 一層層搜尋最有可能的pre-trained model
+        #     融合soft和hard的概念成一個單一結果
         # -------------------------------------------
-        ancenter = []
-        for i, layer_name in enumerate(summary['layer_list']):
-            layer_type = layer_name.split('-')[0]
-            source = 'random'
-            for net_name in model_sort_list:
-                if i < len(info['model_list'][net_name]['layer_list']):
-                    layer_name, layer_summary = __getLayerInfo(info, net_name, i)
-                    if layer_name.split('-')[0] == layer_type:
-                        if 'weight_param' in layer_summary:
-                            if layer_summary['weight_param'] == summary['net'][layer_name]['weight_param']:
-                                source = net_name
-                                break
-            ancenter.append(source)
+        net_ancestor_list, layer_ancestor_list = getAncestor(info, summary, 
+            layer_list_key  = 'layer_list', 
+            model_sort_list = model_hard_sort_list, 
+            net_ancestor    = None, 
+            layer_ancestor  = None
+        )
+        net_ancestor_list, layer_ancestor_list = getAncestor(info, summary, 
+            layer_list_key  = 'weight_layer_list', 
+            model_sort_list = model_soft_sort_list, 
+            net_ancestor    = net_ancestor_list, 
+            layer_ancestor  = layer_ancestor_list
+        )
         
-        # -------------------------------------------
+        # -----------------------------------------------------------------------
         # (Opt) 印出每一層的資訊，以及預訓練的模型來源
-        # -------------------------------------------
-        INFO('------------------------------------------------------------')
-        category_line = '{:>25} {:>25}'.format('Layer Type', 'From')
-        INFO(category_line)
-        INFO('============================================================')
-        for layer, anc in zip(summary['layer_list'], ancenter):
-            layer_info = '{:>25} {:>25}'.format(layer, anc)
-            INFO(layer_info)
-        INFO('------------------------------------------------------------')
+        #       最後確保net_ancestor_list和layer_ancestor_list長度相等
+        # -----------------------------------------------------------------------
+        if verbose:
+            INFO('-----------------------------------------------------------------------------------------------------------------------')
+            category_line = '{:>25} {:>25} {:>25}'.format('Layer Type', 'From(Network)', 'From(Layer)')
+            INFO(category_line)
+            INFO('=======================================================================================================================')
+            for layer, net_anc, layer_anc in zip(summary['layer_list'], net_ancestor_list, layer_ancestor_list):
+                layer_info = '{:>25} {:>25} {:>25}'.format(layer, net_anc, layer_anc)
+                INFO(layer_info)
+            INFO('-----------------------------------------------------------------------------------------------------------------------')
+        if len(net_ancestor_list) != len(layer_ancestor_list):
+            raise Exception('The length of both ancestor list is not the same!')
 
         # -------------------------------------------
         # (5) 根據ancenter list擷取每一層的weight        
         # -------------------------------------------
-        param_list = [None] * len(ancenter)
-        for net_name in set(ancenter):
+        param_list = [None] * len(net_ancestor_list)
+        for net_name in set(net_ancestor_list):
             if net_name != 'random':
+                if verbose:                
+                    INFO('Extract the parameters in %s' % (net_name))                
                 def register_scratch_hook(module):
                     global layer_count
                     layer_count = 0
                     def scratch_hook(module, input, output):
                         global layer_count
-                        if layer_count < len(ancenter):
-                            if ancenter[layer_count] == net_name:
-                                param_list[layer_count] = module.state_dict()
+                        layer_name = '%s-%i' % (str(module.__class__).split('.')[-1].split("'")[0], layer_count + 1)
+                        for i in range(len(net_ancestor_list)):
+                            if net_ancestor_list[i] == net_name and layer_ancestor_list[i] == layer_name:
+                                # param_list[i] = module.state_dict()
+                                param_list[i] = module
                         layer_count += 1
                     if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
                         hook_list.append(module.register_forward_hook(scratch_hook))
@@ -210,13 +221,14 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
             layer_count = 0
             def assign_hook(module, input, output):
                 global layer_count
-                if layer_count < len(ancenter):
+                if layer_count < len(net_ancestor_list):
                     if param_list[layer_count] is not None:
-                        # module.load_state_dict(param_list[layer_count])
                         module = load_state_dict(source = param_list[layer_count], target = module)
                 layer_count += 1
             if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
                 hook_list.append(module.register_forward_hook(assign_hook))
+        if verbose:                
+            INFO('Assign the parameter...')                                    
         hook_list = []
         net.apply(register_assign_hook)
 
@@ -233,6 +245,8 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
         # remove these hooks
         for h in hook_list:
             h.remove()
+        if verbose:        
+            INFO('Finish Bok initialization!')
 
 def getSortList(info, name_2_diff):
     """
@@ -261,26 +275,41 @@ def getSortList(info, name_2_diff):
     model_sort_list = list(reversed(model_sort_list))
     return model_sort_list
 
-def getAncestor(info, summary, layer_list, model_sort_list):
+def getAncestor(info, summary, layer_list_key, model_sort_list, net_ancestor = None, layer_ancestor = None):
     """
-        根據 '層串列' 和 '模型相似度串列' ，組合出 '祖先串列' 和 '曾名子來源串列'
+        根據 '層串列' 和 '模型相似度串列' ，組合出 '祖先串列' 和 '層名子來源串列'
     """
-    ancestor = []
-    for i, layer_name in enumerate(summary['layer_list']):
+    if net_ancestor is None or layer_ancestor is None:
+        net_ancestor_result = []
+        layer_ancestor_result = []
+    else:
+        net_ancestor_result = list(net_ancestor)
+        layer_ancestor_result = list(layer_ancestor)
+    for i, layer_name in enumerate(summary[layer_list_key]):
         layer_type = layer_name.split('-')[0]
-        source = 'random'
-        for net_name in model_sort_list:
-            if i < len(info['model_list'][net_name]['layer_list']):
-                layer_name, layer_summary = __getLayerInfo(info, net_name, i)
-                if layer_name.split('-')[0] == layer_type:
-                    if 'weight_param' in layer_summary:
-                        if layer_summary['weight_param'] == summary['net'][layer_name]['weight_param']:
-                            source = net_name
-                            break
-        ancenter.append(source)
+        net_source = 'random'
+        layer_source = 'random'
+        if net_ancestor is None or net_ancestor_result[i] == 'random':
+            for net_name in model_sort_list:
+                if i < len(info['model_list'][net_name][layer_list_key]):
+                    layer_name, layer_summary = __getLayerInfo(info, net_name, i, list_key = layer_list_key)
+                    if layer_name.split('-')[0] == layer_type:
+                        if 'weight_param' in layer_summary:
+                            if __size_diff(layer_summary['weight_param'], summary['net'][layer_name]['weight_param']):
+                                net_source = net_name
+                                layer_source = layer_name
+                                break
+            if net_ancestor is None:
+                net_ancestor_result.append(net_source)
+                layer_ancestor_result.append(layer_source)
+            else:
+                idx = int(layer_name.split('-')[-1]) - 1
+                net_ancestor_result[idx] = net_source
+                layer_ancestor_result[idx] = layer_source
+    return net_ancestor_result, layer_ancestor_result
 
-def __getLayerInfo(info, net_name, index):
-    layer_name = info['model_list'][net_name]['layer_list'][index]
+def __getLayerInfo(info, net_name, index, list_key = 'layer_list'):
+    layer_name = info['model_list'][net_name][list_key][index]
     return layer_name, info['model_list'][net_name]['net'][layer_name]    
 
 def __size_diff(size1, size2):
