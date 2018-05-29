@@ -30,7 +30,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG11")
 
-    if not (SKIP and 'VGG13' in info['name_list']):
+    if not (SKIP and 'vgg13' in info['name_list']):
         INFO("proceeding for VGG13...")
         net = vggGen.vgg13(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -38,7 +38,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG13")
 
-    if not (SKIP and 'VGG16' in info['name_list']):
+    if not (SKIP and 'vgg16' in info['name_list']):
         INFO("proceeding for VGG16...")
         net = vggGen.vgg16(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -46,7 +46,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG16")
 
-    if not (SKIP and 'VGG19' in info['name_list']):
+    if not (SKIP and 'vgg19' in info['name_list']):
         INFO("proceeding for VGG19...")
         net = vggGen.vgg19(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -54,7 +54,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG19")
 
-    if not (SKIP and 'VGG11_bn' in info['name_list']):
+    if not (SKIP and 'vgg11_bn' in info['name_list']):
         INFO("proceeding for VGG11_bn...")
         net = vggGen.vgg11_bn(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -62,7 +62,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG11_bn")
 
-    if not (SKIP and 'VGG13_bn' in info['name_list']):
+    if not (SKIP and 'vgg13_bn' in info['name_list']):
         INFO("proceeding for VGG13_bn...")
         net = vggGen.vgg13_bn(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -70,7 +70,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG13_bn")
 
-    if not (SKIP and 'VGG16_bn' in info['name_list']):
+    if not (SKIP and 'vgg16_bn' in info['name_list']):
         INFO("proceeding for VGG16_bn...")
         net = vggGen.vgg16_bn(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)
@@ -78,7 +78,7 @@ def recordVGG(info):
     else:
         INFO("Skip VGG16_bn")
 
-    if not (SKIP and 'VGG19_bn' in info['name_list']):
+    if not (SKIP and 'vgg19_bn' in info['name_list']):
         INFO("proceeding for VGG19_bn...")
         net = vggGen.vgg19_bn(pretrained = True).cuda()
         sum = __summary(net, [3, 224, 224], verbose = True)

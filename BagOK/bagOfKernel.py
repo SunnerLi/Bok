@@ -1,8 +1,8 @@
+from .utils import INFO, load_state_dict
 from .networkSummary import __summary
 from collections import OrderedDict
 from torch.autograd import Variable
 from .pretrain import load
-from .utils import INFO
 # import networkSummary.__summary
 import torch.nn as nn
 import torch
@@ -22,6 +22,22 @@ VERBOSE = False
 def init(net, net_input_size, summary, net_type = None, verbose = False):
     """
         對於給定的網路進行初始化
+        初始化的方式有兩種，一種是hard initialization，另一種是soft initialization
+        
+        1. Hard initialization非常嚴謹的比較兩個網路的layer順序，
+        只容許channel不同，大小和順序都要相同，否則就會對於相似度進行扣分，
+        在初始化時，只會針對完全相同的layer index的module做初始化
+
+        2. Soft initialization則剔除所有沒有參數的layer，
+        僅針對有參數的layer進行順序比較，
+        這種作法可以增加來源網路不被設成random的機率。
+
+        * 但這樣的作法可能導致很多網路都有可能會是候選網路
+          這種網路的作法並不考慮任何沒有參數的操作，
+          因此包括Tensor相加、各種非線性或是奇特操作，
+          此比較方式都將忽略這些步驟的差異。
+          對於初始化，重要的是將特徵直接賦予，
+          所以會對VGG這種沒有太多無參數操作的模型加分
         
         Arg:    net         - 想要初始化的網路，為一個nn.Module物件
                 input_size  - 
@@ -55,51 +71,74 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
         target_summary = info['model_list'][net_type]
         if diff(summary, target_summary) == 0:
             print('Direct assign!')
-            net.load_state_dict(load(net_type).state_dict())
+            # net.load_state_dict(load(net_type).state_dict())
+            net = load_state_dict(load(net_type), net)                          # 可能會沒有賦值到？？？
             return
     else:
         """
             尋找最有可能的組合來填充
 
-            1. 針對每一個候選的網路，都去計算相似度
-            2. 針對每一層，根據相似度尋找可能的來源網路
-            3. 掛hook去把這些可能網路的參數抓出來
-            4. 掛hook去把可能的參數初始到目標網路上
+            1. 先計算所有模型的weight_layer_list
+            2. 得到每一個候選網路的weight_layer_list，就是剔除那些沒有權重的layer
+            3. 針對每一個候選的網路，都去計算相似度
+            4. 針對每一層，根據相似度尋找可能的來源網路
+            5. 掛hook去把這些可能網路的參數抓出來
+            6. 掛hook去把可能的參數初始到目標網路上
         """
         # -------------------------------------------
-        # (1) 針對每一個候選網路計算相似度
+        # (1) 計算簡化版的layer_list
+        #     包括以名子為基礎的weight_layer_list，
+        #     以及以index為基礎的weight_index_list。
+        #     對info和本身的summary都要做
         # -------------------------------------------
-        name_2_diff = OrderedDict()
-        small_diff = 100
         for model_name in info['name_list']:
+            result_weight_layer_list = list(info['model_list'][model_name]['layer_list'])
+            result_weight_index_list = list(range(len(result_weight_layer_list)))
+            for layer_name in info['model_list'][model_name]['net']:
+                if 'weight_param' not in info['model_list'][model_name]['net'][layer_name]:
+                    result_weight_layer_list.remove(layer_name)
+                    result_weight_index_list.remove(int(layer_name.split('-')[-1]))
+            info['model_list'][model_name]['weight_layer_list'] = result_weight_layer_list
+            info['model_list'][model_name]['weight_index_list'] = result_weight_index_list
+        result_weight_layer_list = list(summary['layer_list'])
+        result_weight_index_list = list(range(len(result_weight_layer_list)))
+        for layer_name in summary['net']:
+            if 'weight_param' not in summary['net'][layer_name]:
+                result_weight_layer_list.remove(layer_name)
+                result_weight_index_list.remove(layer_name.split('-')[-1])
+        summary['weight_layer_list'] = result_weight_layer_list
+        summary['weight_index_list'] = result_weight_index_list
+
+        # -------------------------------------------
+        # (2) 針對每一個候選網路計算相似度 (未完成)
+        #     包括soft跟hard的情況 
+        # -------------------------------------------
+        name_2_hard_diff = OrderedDict()
+        name_2_soft_diff = OrderedDict()
+        small_diff = 100
+        for model_name in info['name_list']:            
             candidate_summary = info['model_list'][model_name]
-            diff_value = diff(summary, candidate_summary)
-            name_2_diff[model_name] = diff_value
-            if diff_value < small_diff:
-                diff_value = small_diff
+            name_2_hard_diff[model_name] = __summary_diff(
+                source = summary, 
+                target = candidate_summary, 
+                source_layer_list = summary['layer_list'], 
+                target_layer_list = candidate_summary['layer_list']
+            )
+            name_2_soft_diff[model_name] = __summary_diff(
+                source = summary, 
+                target = candidate_summary, 
+                source_layer_list = summary['weight_layer_list'], 
+                target_layer_list = candidate_summary['weight_layer_list']
+            )
+            
+        # -------------------------------------------
+        # (3) 依分數大到小排出名子序列
+        # -------------------------------------------
+        model_hard_sort_list = getSortList(info, name_2_hard_diff)
+        model_soft_sort_list = getSortList(info, name_2_hard_diff)
 
         # -------------------------------------------
-        # (1) 依分數大到小排出名子序列
-        # -------------------------------------------
-        filter_dict = OrderedDict(name_2_diff)
-        model_sort_list = []
-        for i in range(len(info['model_list'])):
-            big_score = None
-            big_model = None
-            for model_name in filter_dict:
-                if big_score is None:
-                    big_score = name_2_diff[model_name]
-                    big_model = model_name
-                else:
-                    if name_2_diff[model_name] < big_score:
-                        big_score = name_2_diff[model_name]
-                        big_model = model_name
-            model_sort_list.append(big_model)
-            filter_dict.pop(big_model)
-        model_sort_list = list(reversed(model_sort_list))
-
-        # -------------------------------------------
-        # (2) 一層層搜尋最有可能的pre-trained model
+        # (4) 一層層搜尋最有可能的pre-trained model
         # -------------------------------------------
         ancenter = []
         for i, layer_name in enumerate(summary['layer_list']):
@@ -128,7 +167,7 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
         INFO('------------------------------------------------------------')
 
         # -------------------------------------------
-        # (3) 根據ancenter list擷取每一層的weight        
+        # (5) 根據ancenter list擷取每一層的weight        
         # -------------------------------------------
         param_list = [None] * len(ancenter)
         for net_name in set(ancenter):
@@ -164,7 +203,7 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
                     h.remove()
 
         # -------------------------------------------
-        # (4) 用hook把weight初始化上去
+        # (6) 用hook把weight初始化上去
         # -------------------------------------------
         def register_assign_hook(module):
             global layer_count
@@ -173,7 +212,8 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
                 global layer_count
                 if layer_count < len(ancenter):
                     if param_list[layer_count] is not None:
-                        module.load_state_dict(param_list[layer_count])
+                        # module.load_state_dict(param_list[layer_count])
+                        module = load_state_dict(source = param_list[layer_count], target = module)
                 layer_count += 1
             if (not isinstance(module, nn.Sequential) and not isinstance(module, nn.ModuleList)):
                 hook_list.append(module.register_forward_hook(assign_hook))
@@ -194,27 +234,88 @@ def init(net, net_input_size, summary, net_type = None, verbose = False):
         for h in hook_list:
             h.remove()
 
+def getSortList(info, name_2_diff):
+    """
+        根據name_2_diff的資訊，
+        回傳一個相似程度由高分至低分的list
+
+        Arg:    info        - info物件
+                name_2_diff - OrderDict物件，順序為 <model_name> : <diff_value>
+        Ret:    List，裏面每個element是model名稱
+    """
+    filter_dict = OrderedDict(name_2_diff)
+    model_sort_list = []
+    for i in range(len(info['model_list'])):
+        big_score = None
+        big_model = None
+        for model_name in filter_dict:
+            if big_score is None:
+                big_score = name_2_diff[model_name]
+                big_model = model_name
+            else:
+                if name_2_diff[model_name] < big_score:
+                    big_score = name_2_diff[model_name]
+                    big_model = model_name
+        model_sort_list.append(big_model)
+        filter_dict.pop(big_model)
+    model_sort_list = list(reversed(model_sort_list))
+    return model_sort_list
+
+def getAncestor(info, summary, layer_list, model_sort_list):
+    """
+        根據 '層串列' 和 '模型相似度串列' ，組合出 '祖先串列' 和 '曾名子來源串列'
+    """
+    ancestor = []
+    for i, layer_name in enumerate(summary['layer_list']):
+        layer_type = layer_name.split('-')[0]
+        source = 'random'
+        for net_name in model_sort_list:
+            if i < len(info['model_list'][net_name]['layer_list']):
+                layer_name, layer_summary = __getLayerInfo(info, net_name, i)
+                if layer_name.split('-')[0] == layer_type:
+                    if 'weight_param' in layer_summary:
+                        if layer_summary['weight_param'] == summary['net'][layer_name]['weight_param']:
+                            source = net_name
+                            break
+        ancenter.append(source)
+
 def __getLayerInfo(info, net_name, index):
     layer_name = info['model_list'][net_name]['layer_list'][index]
     return layer_name, info['model_list'][net_name]['net'][layer_name]    
 
-def diff(source, target):
+def __size_diff(size1, size2):
+    """
+        比較兩個size是否大小一致，
+        如果hw一致但channel不一致，仍判定為一樣
+    """
+    if len(size1) != len(size2):
+        raise Exception('The size is not the same')             # !!!!!
+    if len(size1) == 4 or len(size1) == 3:
+        if size1[-1] == size2[-1] and size1[-2] == size2[-2]:
+            return True
+        return False
+    else:
+        raise Exception('The rank of size is only %d' % (len(size1)))
+
+def __summary_diff(source, target, source_layer_list, target_layer_list):
     """
         比較兩個summary差異多大
         順序不一樣或大小不一樣都扣分，滿分為0分
+        為了soft or hard初始化的彈性，layer的順序需要另外給予
+
+        source端為想要初始化的模型
+        target端為已經訓練過的完美模型
     """
     score = 0
-    source_order = source['layer_list']
-    target_order = target['layer_list']
-    layer_num = min(len(source_order), len(target_order))
+    layer_num = min(len(source_layer_list), len(target_layer_list))
     for i in range(layer_num):
-        source_layer_name = source_order[i]
-        target_layer_name = target_order[i]
+        source_layer_name = source_layer_list[i]
+        target_layer_name = target_layer_list[i]
         if source_layer_name != target_layer_name:
             score -= 1
         else:
-            if 'weight_param' in source['net'][source_layer_name] and \
-                source['net'][source_layer_name]['weight_param'] != target['net'][target_layer_name]['weight_param']:
+            if 'weight_param' in source['net'][source_layer_name] and not \
+                __size_diff(source['net'][source_layer_name]['weight_param'], target['net'][target_layer_name]['weight_param']):
                 score -= 1
     return score 
 
