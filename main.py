@@ -1,4 +1,3 @@
-from tool.customVGG import CustomVGG
 import BagOK.bagOfKernel as bok
 import torch.nn as nn
 import time
