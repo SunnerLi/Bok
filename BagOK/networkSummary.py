@@ -27,6 +27,7 @@ def __summary(model, input_size, verbose = False):
 
         Arg:    model       - 網路，為一個nn.Module物件
                 input_size  - 一個含有輸入大小的list，為list of list，每一個element代表一個輸入的大小（不含batch)
+                verbose     - bool，要不要顯示log
     """
     def register_hook(module):
         apple = "!"

@@ -1,6 +1,9 @@
 import torchvision.models as models
 
 def load(name):
+    """
+        根據代號名稱，從torchvision中載入相對應的pretrained model
+    """
     net = None
     if name == 'vgg11':
         net = models.vgg.vgg11(pretrained = True)

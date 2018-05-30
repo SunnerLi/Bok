@@ -1,8 +1,12 @@
-#!/usr/bin/python
-# -*- coding: UTF-8 -*-
-
 import torch.nn as nn
 import copy
+
+class BokException(Exception):
+    """
+        The exception which is used in Bok repo uniquely
+    """
+    def __init__(self, remind):
+        print("[ Bok ] Error >> ", remind)
 
 def INFO(string):
     print(" {:>10} ".format("[ Bok ]  "), string)
